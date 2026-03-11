@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SignalR Client</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/microsoft-signalr/6.0.1/signalr.min.js"></script>
+    <style>
+        :root { 
+            --bg: #0f172a; --card: #1e293b; --text: #f1f5f9; 
+            --primary: #3b82f6; --success: #22c55e; --error: #ef4444; --warn: #f59e0b;
+        }
+        body { font-family: system-ui, -apple-system, sans-serif; background: var(--bg); color: var(--text); padding: 20px; }
+        .container { max-width: 900px; margin: auto; background: var(--card); padding: 25px; border-radius: 12px; box-shadow: 0 10px 15px -3px rgba(0,0,0,0.5); }
+        
+        /* Status Label Styling */
+        .status-container { display: flex; align-items: center; gap: 10px; margin-bottom: 20px; padding: 10px; background: rgba(0,0,0,0.2); border-radius: 8px; }
+        .status-dot { width: 12px; height: 12px; border-radius: 50%; background: #64748b; position: relative; }
+        .status-label { font-weight: bold; text-transform: uppercase; letter-spacing: 1px; font-size: 0.85rem; }
+        
+        /* Status States */
+        .connected .status-dot { background: var(--success); box-shadow: 0 0 10px var(--success); animation: pulse 2s infinite; }
+        .connected .status-label { color: var(--success); }
+        .disconnected .status-dot { background: var(--error); }
+        .disconnected .status-label { color: var(--error); }
+        .connecting .status-dot { background: var(--warn); animation: blink 1s infinite; }
+        .connecting .status-label { color: var(--warn); }
+
+        @keyframes pulse { 0% { opacity: 1; } 50% { opacity: 0.5; } 100% { opacity: 1; } }
+        @keyframes blink { 0% { opacity: 0; } 50% { opacity: 1; } 100% { opacity: 0; } }
+
+        .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+        .section { background: rgba(255,255,255,0.05); padding: 15px; border-radius: 8px; margin-bottom: 20px; }
+        label { display: block; font-size: 0.8rem; color: #94a3b8; margin-bottom: 5px; }
+        input, textarea { width: 100%; padding: 10px; background: #0f172a; border: 1px solid #334155; color: white; border-radius: 4px; box-sizing: border-box; margin-bottom: 10px; }
+        button { padding: 10px 15px; border: none; border-radius: 4px; cursor: pointer; font-weight: 600; width: 100%; transition: 0.2s; }
+        .btn-start { background: var(--primary); color: white; }
+        .btn-stop { background: #334155; color: #cbd5e1; }
+        .btn-send { background: var(--success); color: white; }
+        button:disabled { opacity: 0.3; cursor: not-allowed; }
+        #log { height: 250px; overflow-y: auto; background: #000; padding: 10px; font-family: monospace; font-size: 0.8rem; border-radius: 4px; border: 1px solid #334155; }
+        .log-in { color: #38bdf8; }
+        .log-sys { color: #94a3b8; }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <div id="statusWrapper" class="status-container disconnected">
+        <div class="status-dot"></div>
+        <div id="statusText" class="status-label">Disconnected</div>
+    </div>
+
+    <div class="section">
+        <label for="url">Hub Endpoint URL</label>
+        <input type="text" id="url" value="http://localhost:5000/hub">
+        
+        <div style="display: flex; gap: 10px; align-items: center; margin-bottom: 10px;">
+            <input type="checkbox" id="useAuth" style="width: auto; margin: 0;">
+            <label for="useAuth" style="margin: 0;">Use Bearer Token</label>
+        </div>
+        <input type="text" id="token" placeholder="Paste JWT here..." style="display:none">
+
+        <div style="display: flex; gap: 10px;">
+            <button id="connectBtn" class="btn-start">Connect</button>
+            <button id="disconnectBtn" class="btn-stop" disabled>Disconnect</button>
+        </div>
+    </div>
+
+    <div class="grid">
+        <div class="section">
+            <label for="listenMethod">Expected Method Name (Listener)</label>
+            <input type="text" id="listenMethod" value="ReceiveMessage">
+            <small style="color: #64748b; font-size: 0.7rem;">Listening for data from server...</small>
+        </div>
+        <div class="section">
+            <label for="sendMethod">Invoke Method (Sender)</label>
+            <input type="text" id="sendMethod" value="SendMessage">
+            <input type="text" id="payload" placeholder="Message content">
+            <button id="sendBtn" class="btn-send" disabled>Send to Hub</button>
+        </div>
+    </div>
+
+    <div class="section">
+        <label for="log">Traffic Log</label>
+        <div id="log"></div>
+    </div>
+</div>
+
+<script>
+    let connection = null;
+    const wrapper = document.getElementById('statusWrapper');
+    const statusText = document.getElementById('statusText');
+    const log = document.getElementById('log');
+
+    // UI Toggle for Auth
+    document.getElementById('useAuth').addEventListener('change', e => {
+        document.getElementById('token').style.display = e.target.checked ? 'block' : 'none';
+    });
+
+    function updateStatus(state) {
+        wrapper.className = 'status-container ' + state;
+        statusText.textContent = state.toUpperCase();
+    }
+
+    function addLog(msg, type='sys') {
+        const line = document.createElement('div');
+        line.className = 'log-' + type;
+        line.textContent = `[${new Date().toLocaleTimeString()}] ${msg}`;
+        log.prepend(line);
+    }
+
+    document.getElementById('connectBtn').addEventListener('click', async () => {
+        const url = document.getElementById('url').value;
+        const useAuth = document.getElementById('useAuth').checked;
+        const token = document.getElementById('token').value;
+
+        updateStatus('connecting');
+
+        const options = {};
+        if (useAuth && token) {
+            options.accessTokenFactory = () => token.trim();
+        }
+
+        connection = new signalR.HubConnectionBuilder()
+            .withUrl(url, options)
+            .withAutomaticReconnect()
+            .build();
+
+        // Status Handlers
+        connection.onreconnecting(() => updateStatus('connecting'));
+        connection.onreconnected(() => updateStatus('connected'));
+        connection.onclose(() => updateStatus('disconnected'));
+
+        // Logic Listener
+        const method = document.getElementById('listenMethod').value;
+        connection.on(method, (data) => {
+            addLog(`Received on ${method}: ${JSON.stringify(data)}`, 'in');
+        });
+
+        try {
+            await connection.start();
+            updateStatus('connected');
+            addLog("System: Connected");
+            document.getElementById('connectBtn').disabled = true;
+            document.getElementById('disconnectBtn').disabled = false;
+            document.getElementById('sendBtn').disabled = false;
+        } catch (err) {
+            updateStatus('disconnected');
+            addLog("Error: " + err.message);
+        }
+    });
+
+    document.getElementById('sendBtn').addEventListener('click', async () => {
+        const method = document.getElementById('sendMethod').value;
+        const payload = document.getElementById('payload').value;
+        try {
+            await connection.invoke(method, payload);
+            addLog(`Sent to ${method}: ${payload}`);
+        } catch (err) {
+            addLog("Send Error: " + err.message);
+        }
+    });
+
+    document.getElementById('disconnectBtn').addEventListener('click', async () => {
+        if (connection) {
+            await connection.stop();
+            document.getElementById('connectBtn').disabled = false;
+            document.getElementById('disconnectBtn').disabled = true;
+            document.getElementById('sendBtn').disabled = true;
+        }
+    });
+</script>
+</body>
+</html>
